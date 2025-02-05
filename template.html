@@ -1,0 +1,18 @@
+<div class="qv-extension-chatbot">
+    <div class="chat-container" qv-extension>
+        <div class="chat-messages" id="chatMessages">
+            <div ng-repeat="message in messages track by $index" 
+                 ng-class="{'user-message': message.type === 'user', 'bot-message': message.type === 'bot'}">
+                <div class="message-text">{{message.text}}</div>
+                <div ng-if="message.chartId" class="chart-container" id="{{message.chartId}}"></div>
+            </div>
+        </div>
+        <div class="chat-input">
+            <input type="text" 
+                   ng-model="userInput" 
+                   ng-keypress="handleKeyPress($event)"
+                   placeholder="Ask questions or request charts...">
+            <button ng-click="sendMessage()">Send</button>
+        </div>
+    </div>
+</div>
