@@ -1,18 +1,31 @@
 <div class="qv-extension-chatbot">
-    <div class="chat-container" qv-extension>
-        <div class="chat-messages" id="chatMessages">
-            <div ng-repeat="message in messages track by $index" 
-                 ng-class="{'user-message': message.type === 'user', 'bot-message': message.type === 'bot'}">
-                <div class="message-text">{{message.text}}</div>
-                <div ng-if="message.chartId" class="chart-container" id="{{message.chartId}}"></div>
+    <div class="chat-container">
+        <div class="messages-container">
+            <div ng-repeat="message in messages" class="message" ng-class="message.role">
+                <div class="message-content">
+                    {{message.content}}
+                    <div ng-if="message.chartId" id="{{message.chartId}}" class="chart-container"></div>
+                </div>
+                <div class="message-actions">
+                    <button ng-click="copyResponse(message.content)" class="action-button">
+                        <i class="lui-icon lui-icon--copy"></i>
+                    </button>
+                    <button ng-click="speakMessage(message.content)" class="action-button">
+                        <i class="lui-icon lui-icon--speaker"></i>
+                    </button>
+                </div>
             </div>
         </div>
-        <div class="chat-input">
-            <input type="text" 
-                   ng-model="userInput" 
-                   ng-keypress="handleKeyPress($event)"
-                   placeholder="Ask questions or request charts...">
-            <button ng-click="sendMessage()">Send</button>
+        <div class="input-container">
+            <input type="text" ng-model="query" placeholder="Type your question..." 
+                   ng-keypress="$event.keyCode === 13 && sendMessage()" />
+            <button ng-click="startVoiceInput()" ng-class="{'listening': isListening}">
+                <i class="lui-icon lui-icon--mic"></i>
+            </button>
+            <button ng-click="sendMessage()">
+                <i class="lui-icon lui-icon--send"></i>
+            </button>
         </div>
     </div>
+    <div class="toast" ng-show="showToast">Response copied to clipboard!</div>
 </div>
