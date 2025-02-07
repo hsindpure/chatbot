@@ -1,229 +1,187 @@
-// chatbot.js
 define([
     "qlik",
     "jquery",
     "./properties",
     "text!./template.html",
-    "css!./style.css"
+    "css!./styles.css"
 ], function(qlik, $, properties, template) {
     'use strict';
 
-    // Claude API Configuration
-    const CLAUDE_API_KEY = 'your_claude_api_key';
-    const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+    // Speech recognition setup
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.lang = 'en-US';
+
+    // Speech synthesis setup
+    const synth = window.speechSynthesis;
 
     return {
         template: template,
+        initialProperties: {
+            qHyperCubeDef: {
+                qDimensions: [],
+                qMeasures: [],
+                qInitialDataFetch: [{
+                    qWidth: 10,
+                    qHeight: 50
+                }]
+            }
+        },
         definition: properties,
         support: {
             snapshot: true,
             export: true,
             exportData: true
         },
+        paint: function($element, layout) {
+            this.$scope.layout = layout;
+            return qlik.Promise.resolve();
+        },
         controller: ['$scope', function($scope) {
             $scope.messages = [];
-            $scope.userInput = '';
-            
-            var app = qlik.currApp();
-            var fieldList = [];
-            var dataModel = {};
-            
-            // Get field list and initialize data model
-            app.getList("FieldList").then(function(model) {
-                fieldList = model.layout.qFieldList.qItems.map(item => item.qName);
-                initializeDataModel();
-            });
+            $scope.loading = false;
+            $scope.objectData = {};
 
-            // Initialize data model with field values and types
-            function initializeDataModel() {
-                fieldList.forEach(function(field) {
-                    app.field(field).getData().then(function(data) {
-                        dataModel[field] = {
-                            values: data,
-                            type: determineFieldType(data)
-                        };
+            // Initialize the extension
+            function init() {
+                const app = qlik.currApp();
+                $scope.layout.objectIds?.split(',').forEach(objectId => {
+                    objectId = objectId.trim();
+                    app.getObject(objectId).then(model => {
+                        model.getHyperCubeData('/qHyperCubeDef', [{
+                            qTop: 0,
+                            qLeft: 0,
+                            qWidth: 10,
+                            qHeight: 1000
+                        }]).then(data => {
+                            $scope.objectData[objectId] = data[0];
+                        });
                     });
                 });
             }
 
-            function determineFieldType(data) {
-                if (data && data[0]) {
-                    if (!isNaN(data[0])) return 'numeric';
-                    if (!isNaN(Date.parse(data[0]))) return 'date';
-                    return 'string';
-                }
-                return 'string';
-            }
+            // Handle voice input
+            $scope.startVoiceInput = function() {
+                recognition.start();
+                $scope.isListening = true;
+                $scope.$apply();
+            };
 
-            // Call Claude API
-            async function callClaudeAPI(prompt, data) {
+            recognition.onresult = function(event) {
+                const query = event.results[0][0].transcript;
+                $scope.query = query;
+                $scope.sendMessage();
+                $scope.isListening = false;
+                $scope.$apply();
+            };
+
+            // Handle voice output
+            $scope.speakMessage = function(message) {
+                const utterance = new SpeechSynthesisUtterance(message);
+                synth.speak(utterance);
+            };
+
+            // Copy response to clipboard
+            $scope.copyResponse = function(response) {
+                navigator.clipboard.writeText(response);
+                // Show toast notification
+                $scope.showToast = true;
+                setTimeout(() => {
+                    $scope.showToast = false;
+                    $scope.$apply();
+                }, 2000);
+            };
+
+            // Send message to OpenAI API
+            $scope.sendMessage = async function() {
+                if (!$scope.query) return;
+
+                const message = {
+                    role: 'user',
+                    content: $scope.query
+                };
+                $scope.messages.push(message);
+                $scope.loading = true;
+
                 try {
-                    const response = await fetch(CLAUDE_API_URL, {
+                    // Prepare data context from QlikSense objects
+                    let dataContext = '';
+                    Object.entries($scope.objectData).forEach(([objectId, data]) => {
+                        dataContext += `Data from ${objectId}:\n`;
+                        dataContext += JSON.stringify(data) + '\n\n';
+                    });
+
+                    // Prepare prompt with context
+                    const prompt = `${$scope.layout.prePrompt}\n\nContext:\n${dataContext}\n\nUser Query: ${$scope.query}`;
+
+                    const response = await fetch('https://api.openai.com/v1/chat/completions', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'x-api-key': CLAUDE_API_KEY,
-                            'anthropic-version': '2023-06-01'
+                            'Authorization': `Bearer ${$scope.layout.apiKey}`
                         },
                         body: JSON.stringify({
-                            model: 'claude-3-opus-20240229',
-                            max_tokens: 1024,
+                            model: "gpt-4",
                             messages: [{
-                                role: 'user',
-                                content: `Given this data context: ${JSON.stringify(data)}\n\nQuestion: ${prompt}\n\nProvide a detailed analysis and answer.`
-                            }]
+                                role: "system",
+                                content: prompt
+                            }],
+                            temperature: 0.7
                         })
                     });
 
-                    const result = await response.json();
-                    return result.content[0].text;
-                } catch (error) {
-                    console.error('Claude API Error:', error);
-                    return 'I encountered an error analyzing the data. Please try again.';
-                }
-            }
+                    const data = await response.json();
+                    const aiResponse = data.choices[0].message.content;
 
-            // Process user question with data context
-            async function processQuestion(question) {
-                // Gather relevant data context
-                const dataContext = await gatherDataContext(question);
-                
-                // Get Claude's analysis
-                const claudeResponse = await callClaudeAPI(question, dataContext);
-                
-                // Check if response contains visualization request
-                if (claudeResponse.includes('VISUALIZATION:')) {
-                    return handleVisualizationRequest(claudeResponse, dataContext);
-                }
-                
-                return claudeResponse;
-            }
-
-            // Gather relevant data for context
-            async function gatherDataContext(question) {
-                const context = {};
-                const keywords = extractKeywords(question);
-                
-                for (const field of keywords) {
-                    if (dataModel[field]) {
-                        // Get field data
-                        const fieldData = await app.field(field).getData();
-                        context[field] = {
-                            type: dataModel[field].type,
-                            sampleData: fieldData.slice(0, 10), // Send sample data
-                            summary: await getFieldSummary(field)
-                        };
-                    }
-                }
-                
-                return context;
-            }
-
-            // Get summary statistics for a field
-            async function getFieldSummary(field) {
-                if (dataModel[field].type === 'numeric') {
-                    const summary = {
-                        sum: await app.calculateExpression(`Sum(${field})`),
-                        avg: await app.calculateExpression(`Avg(${field})`),
-                        min: await app.calculateExpression(`Min(${field})`),
-                        max: await app.calculateExpression(`Max(${field})`)
-                    };
-                    return summary;
-                }
-                return null;
-            }
-
-            // Handle visualization requests from Claude
-            async function handleVisualizationRequest(response, dataContext) {
-                const vizConfig = extractVisualizationConfig(response);
-                if (vizConfig) {
-                    const chartObject = await createVisualization(vizConfig);
-                    return {
-                        text: response.split('VISUALIZATION:')[0].trim(),
-                        visualization: chartObject
-                    };
-                }
-                return response;
-            }
-
-            // Extract visualization configuration from Claude's response
-            function extractVisualizationConfig(response) {
-                try {
-                    const vizPart = response.split('VISUALIZATION:')[1];
-                    return JSON.parse(vizPart);
-                } catch (error) {
-                    return null;
-                }
-            }
-
-            // Create QlikSense visualization
-            async function createVisualization(config) {
-                try {
-                    const vis = await app.visualization.create(
-                        config.type,
-                        config.dimensions,
-                        config.measures,
-                        config.properties
-                    );
-                    return vis;
-                } catch (error) {
-                    console.error('Visualization Error:', error);
-                    return null;
-                }
-            }
-
-            // Handle send message
-            $scope.sendMessage = async function() {
-                if (!$scope.userInput.trim()) return;
-
-                const userMessage = $scope.userInput;
-                $scope.messages.push({
-                    type: 'user',
-                    text: userMessage
-                });
-
-                $scope.userInput = '';
-
-                try {
-                    const response = await processQuestion(userMessage);
-                    
-                    if (typeof response === 'object' && response.visualization) {
-                        // Handle response with visualization
+                    // Check if response contains chart instructions
+                    if (aiResponse.toLowerCase().includes('chart')) {
+                        // Create visualization using Qlik engine API
+                        const app = qlik.currApp();
+                        const chartProps = parseChartProperties(aiResponse);
+                        const vis = await app.visualization.create(chartProps.type, chartProps.props);
                         const chartId = 'chart_' + Date.now();
                         $scope.messages.push({
-                            type: 'bot',
-                            text: response.text,
+                            role: 'assistant',
+                            content: aiResponse,
                             chartId: chartId
                         });
-                        
-                        // Render visualization after DOM update
-                        setTimeout(() => {
-                            response.visualization.show(chartId);
-                        }, 100);
+                        vis.show(chartId);
                     } else {
-                        // Handle text-only response
                         $scope.messages.push({
-                            type: 'bot',
-                            text: response
+                            role: 'assistant',
+                            content: aiResponse
                         });
                     }
-                    
-                    $scope.$apply();
                 } catch (error) {
-                    console.error('Error processing message:', error);
+                    console.error('Error:', error);
                     $scope.messages.push({
-                        type: 'bot',
-                        text: 'Sorry, I encountered an error. Please try again.'
+                        role: 'assistant',
+                        content: 'Sorry, there was an error processing your request.'
                     });
-                    $scope.$apply();
                 }
+
+                $scope.loading = false;
+                $scope.query = '';
+                $scope.$apply();
             };
 
-            $scope.handleKeyPress = function(event) {
-                if (event.which === 13) {
-                    $scope.sendMessage();
-                }
-            };
+            // Helper function to parse chart properties from AI response
+            function parseChartProperties(response) {
+                // Add logic to parse chart type and properties from AI response
+                // This is a simplified example
+                return {
+                    type: 'barchart',
+                    props: {
+                        qHyperCubeDef: {
+                            qDimensions: [],
+                            qMeasures: []
+                        }
+                    }
+                };
+            }
+
+            init();
         }]
     };
 });
